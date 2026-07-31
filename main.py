@@ -21,10 +21,10 @@ from telethon.tl.functions.messages import SendReactionRequest, ReadHistoryReque
 from telethon.tl.types import ReactionEmoji
 
 # ==================== КОНФИГУРАЦИЯ ====================
-API_ID = 12345678                  # Ваш API ID
+API_ID = 12345678                  # Ваш API ID (с my.telegram.org)
 API_HASH = 'YOUR_API_HASH'          # Ваш API Hash
-BOT_TOKEN = 'YOUR_BOT_TOKEN'        # Токен бота управления от @BotFather
-ADMIN_ID = 123456789                # Ваш личный Telegram ID
+BOT_TOKEN = 'YOUR_BOT_TOKEN'        # Токен бота от @BotFather
+ADMIN_ID = 123456789                # Ваш личный Telegram ID (число)
 
 USERBOT_SESSION = 'userbot_session'
 BOT_SESSION = 'admin_bot_session'
@@ -34,28 +34,73 @@ POPULAR_CHANNELS = ['durov', 'telegram', 'rbc_news', 'ria_realtime', 'tass_agenc
 REACTIONS = ['👍', '🔥', '👏', '❤️', '🤔', '🎉']
 
 # ==================== БАЗА ДАННЫХ ПРОКСИ В ПАМЯТИ ====================
-# Список сохраненных прокси: [{'id': 0, 'host': ..., 'port': ..., 'user': ..., 'password': ...}]
+# Структура: [{'id': int, 'type': socks.HTTP/SOCKS5/SOCKS4, 'host': str, 'port': int, 'user': str, 'password': str}]
 proxies_db = []
 active_proxy_id = None
 
 user_states = {}
-auth_context = {}  # Контекст процесса входа (телефон, phone_hash, client и т.д.)
+auth_context = {}
 
 
 def get_telethon_proxy(proxy_dict):
-    """Преобразование словаря прокси в формат Telethon"""
+    """Преобразование словаря прокси в формат Telethon (универсально для HTTP, SOCKS4, SOCKS5)"""
     if not proxy_dict:
         return None
-    if proxy_dict.get('user') and proxy_dict.get('password'):
-        return (
-            socks.SOCKS5,
-            proxy_dict['host'],
-            proxy_dict['port'],
-            True,
-            proxy_dict['user'],
-            proxy_dict['password']
-        )
-    return (socks.SOCKS5, proxy_dict['host'], proxy_dict['port'])
+
+    p_type = proxy_dict.get('type', socks.HTTP)
+    host = proxy_dict['host']
+    port = proxy_dict['port']
+    user = proxy_dict.get('user')
+    password = proxy_dict.get('password')
+
+    if user and password:
+        return (p_type, host, port, True, user, password)
+    return (p_type, host, port)
+
+
+def parse_proxy_string(raw_text: str):
+    """Автоматический парсер входящей строки прокси любого формата"""
+    text = raw_text.strip()
+    p_type = None
+
+    # Определение по префиксу
+    if text.startswith("socks5://"):
+        p_type = socks.SOCKS5
+        text = text.replace("socks5://", "")
+    elif text.startswith("socks4://"):
+        p_type = socks.SOCKS4
+        text = text.replace("socks4://", "")
+    elif text.startswith("http://") or text.startswith("https://"):
+        p_type = socks.HTTP
+        text = text.replace("http://", "").replace("https://", "")
+
+    parts = text.split(':')
+    if len(parts) not in (2, 4):
+        return None
+
+    host = parts[0]
+    try:
+        port = int(parts[1])
+    except ValueError:
+        return None
+
+    user = parts[2] if len(parts) == 4 else None
+    password = parts[3] if len(parts) == 4 else None
+
+    # Если тип не был задан через префикс, определяем по частым портам
+    if p_type is None:
+        if port in (1080, 1081, 9050, 9150):
+            p_type = socks.SOCKS5
+        else:
+            p_type = socks.HTTP  # Порты 8000, 8080, 3128, 80 и т.д.
+
+    return {
+        'type': p_type,
+        'host': host,
+        'port': port,
+        'user': user,
+        'password': password
+    }
 
 
 # ==================== МОДУЛЬ ЮЗЕРБОТА ====================
@@ -73,33 +118,31 @@ class UserbotWorker:
         return None
 
     async def init_client(self):
-        """Инициализация клиента строго с выбранным прокси"""
+        """Инициализация клиента с выбранным прокси"""
         proxy_info = self.get_current_proxy()
         if not proxy_info:
-            raise ValueError("⛔ Прокси не выбран или не настроен! Запуск заблокирован.")
+            raise ValueError("⛔ Прокси не выбран! Добавьте и выберите прокси в меню.")
 
         telethon_proxy = get_telethon_proxy(proxy_info)
 
-        if self.client:
-            if self.client.is_connected():
-                await self.client.disconnect()
+        if self.client and self.client.is_connected():
+            await self.client.disconnect()
 
         self.client = TelegramClient(USERBOT_SESSION, API_ID, API_HASH, proxy=telethon_proxy)
         await self.client.connect()
 
         if not await self.client.is_user_authorized():
-            raise PermissionError("🔒 Аккаунт не авторизован! Пройдите авторизацию через меню.")
+            raise PermissionError("🔒 Аккаунт не авторизован! Выполните вход через меню.")
 
-    async def check_ban(() -> str:
+    async def check_ban(self) -> str:
         try:
-            worker = UserbotWorker()
-            await worker.init_client()
-            spam_bot = await worker.client.get_entity('SpamBot')
-            await worker.client(ReadHistoryRequest(peer=spam_bot, max_id=0))
-            await worker.client.send_message(spam_bot, '/start')
+            await self.init_client()
+            spam_bot = await self.client.get_entity('SpamBot')
+            await self.client(ReadHistoryRequest(peer=spam_bot, max_id=0))
+            await self.client.send_message(spam_bot, '/start')
             await asyncio.sleep(3)
 
-            messages = await worker.client.get_messages(spam_bot, limit=1)
+            messages = await self.client.get_messages(spam_bot, limit=1)
             if not messages:
                 return "❓ Нет ответа от SpamBot."
 
@@ -111,7 +154,7 @@ class UserbotWorker:
         except (ValueError, PermissionError) as err:
             return str(err)
         except Exception as e:
-            return f"❌ Ошибка проверки: {e}"
+            return f"❌ Ошибка проверки прокси/аккаунта: {e}"
 
     async def warm_up(self, cycles=1, progress_callback=None):
         try:
@@ -190,7 +233,7 @@ class UserbotWorker:
                     pass
 
             if not parsed_users:
-                return "❌ Не удалось собрать юзернеймы."
+                return "❌ Не удалось собрать юзернеймы из этого источника."
 
             existing_users = set()
             if os.path.exists(PARSED_USERS_FILE):
@@ -202,7 +245,7 @@ class UserbotWorker:
                 for u in all_users:
                     f.write(f"{u}\n")
 
-            return f"✅ **Парсинг завершен!**\nСобрано: `{len(parsed_users)}`\nВсего в базе: `{len(all_users)}`"
+            return f"✅ **Парсинг завершен!**\nНовых найдено: `{len(parsed_users)}`\nВсего в базе: `{len(all_users)}`"
         except (ValueError, PermissionError) as err:
             return str(err)
         except Exception as e:
@@ -210,13 +253,13 @@ class UserbotWorker:
 
     async def broadcast(self, message_text: str, progress_callback=None) -> str:
         if not os.path.exists(PARSED_USERS_FILE):
-            return "❌ База пользователей не найдена."
+            return "❌ Файл базы не найден. Сначала выполните парсинг."
 
         with open(PARSED_USERS_FILE, 'r', encoding='utf-8') as f:
             users = [line.strip() for line in f if line.strip()]
 
         if not users:
-            return "❌ База пуста."
+            return "❌ База пользователей пуста."
 
         try:
             await self.init_client()
@@ -231,7 +274,7 @@ class UserbotWorker:
                     successful += 1
                     await asyncio.sleep(random.randint(40, 75))
                 except PeerFloodError:
-                    return f"⛔ **Спамблок!** Отправка остановлена. Успешно: `{successful}`."
+                    return f"⛔ **Спамблок!** Рассылка остановлена. Успешно: `{successful}`."
                 except Exception:
                     pass
 
@@ -242,11 +285,9 @@ class UserbotWorker:
             return f"❌ Ошибка рассылки: {e}"
 
 
+# ==================== ИНИЦИАЛИЗАЦИЯ И МЕНЮ ====================
 worker = UserbotWorker()
 bot = TelegramClient(BOT_SESSION, API_ID, API_HASH)
-
-
-# ==================== КНОПКИ И МЕНЮ ====================
 
 def get_main_keyboard():
     return [
@@ -259,13 +300,16 @@ def get_main_keyboard():
 
 def get_proxy_keyboard():
     buttons = []
+    type_names = {socks.HTTP: "HTTP", socks.SOCKS5: "SOCKS5", socks.SOCKS4: "SOCKS4"}
+    
     for p in proxies_db:
         status_icon = "✅ " if p['id'] == active_proxy_id else ""
-        label = f"{status_icon}{p['host']}:{p['port']}"
+        proto = type_names.get(p['type'], 'PROXY')
+        label = f"{status_icon}[{proto}] {p['host']}:{p['port']}"
         buttons.append([Button.inline(label, f"select_proxy_{p['id']}".encode())])
     
-    buttons.append([Button.inline("➕ Добавить прокси SOCKS5", b"add_proxy")])
-    buttons.append([Button.inline("⬅️ Назад", b"main_menu")])
+    buttons.append([Button.inline("➕ Добавить прокси", b"add_proxy")])
+    buttons.append([Button.inline("⬅️ Назад в меню", b"main_menu")])
     return buttons
 
 def get_auth_keyboard():
@@ -282,7 +326,7 @@ def get_auth_keyboard():
 async def start_handler(event):
     if event.sender_id != ADMIN_ID:
         return
-    await event.respond("🤖 **Панель управления Telegram Юзерботом**\n\n⚠️ *Все действия выполняются строго через выбранный прокси.*", buttons=get_main_keyboard())
+    await event.respond("🤖 **Панель управления Telegram Юзерботом**\n\n⚠️ *Все операции выполняются исключительно через активный прокси.*", buttons=get_main_keyboard())
 
 
 @bot.on(events.CallbackQuery)
@@ -296,18 +340,26 @@ async def callback_handler(event):
         user_states.pop(event.sender_id, None)
         await event.edit("🤖 **Главное меню**", buttons=get_main_keyboard())
 
-    # --- МЕНЮ ПРОКСИ ---
+    # --- НАСТРОЙКА ПРОКСИ ---
     elif data == b"proxy_menu":
         active_p = worker.get_current_proxy()
-        active_str = f"`{active_p['host']}:{active_p['port']}`" if active_p else "❌ Не выбран"
+        if active_p:
+            proto = "HTTP" if active_p['type'] == socks.HTTP else "SOCKS5"
+            active_str = f"`{proto} -> {active_p['host']}:{active_p['port']}`"
+        else:
+            active_str = "❌ Не выбран"
+
         text = f"🌐 **Настройки Прокси:**\n\nАктивный прокси: {active_str}\n\nВыберите прокси из списка ниже или добавьте новый:"
         await event.edit(text, buttons=get_proxy_keyboard())
 
     elif data == b"add_proxy":
         user_states[event.sender_id] = 'awaiting_proxy_input'
         await event.edit(
-            "🌐 **Отправьте прокси SOCKS5 в формате:**\n\n"
-            "`ip:port:login:password`\nили\n`ip:port`",
+            "🌐 **Отправьте прокси в любом из форматов:**\n\n"
+            "• `168.181.53.243:8000` *(авто-HTTP)*\n"
+            "• `168.181.53.243:8000:user:pass`\n"
+            "• `socks5://192.168.1.1:1080:user:pass`\n"
+            "• `http://192.168.1.1:8000:user:pass`",
             buttons=[[Button.inline("❌ Отмена", b"proxy_menu")]]
         )
 
@@ -315,35 +367,41 @@ async def callback_handler(event):
         pid = int(data.decode().split("_")[2])
         global active_proxy_id
         active_proxy_id = pid
-        await event.answer("✅ Прокси успешно выбран!")
+        await event.answer("✅ Активный прокси изменен!")
         await callback_handler(type('Event', (), {'sender_id': ADMIN_ID, 'data': b"proxy_menu", 'edit': event.edit, 'answer': event.answer})())
 
-    # --- АВТОРИЗАЦИЯ АКТУАЛЬНОГО АККАУНТА ---
+    # --- АВТОРИЗАЦИЯ ---
     elif data == b"auth_menu":
         if not worker.get_current_proxy():
             await event.answer("⛔ Сначала добавьте и выберите Прокси!", alert=True)
             return
-        await event.edit("🔑 **Выберите способ входа в аккаунт:**\n\n*(Подключение пойдет через активный прокси)*", buttons=get_auth_keyboard())
+        await event.edit("🔑 **Выберите способ входа в аккаунт:**\n\n*(Соединение устанавливается через активный прокси)*", buttons=get_auth_keyboard())
 
-    # Вход по номеру
+    # Авторизация по номеру
     elif data == b"auth_phone":
         user_states[event.sender_id] = 'awaiting_phone'
-        await event.edit("📱 Отправьте **номер телефона** аккаунта (в международном формате, например `+79991234567`):", buttons=[[Button.inline("❌ Отмена", b"auth_menu")]])
+        await event.edit("📱 Отправьте **номер телефона** в международном формате (например `+79991234567`):", buttons=[[Button.inline("❌ Отмена", b"auth_menu")]])
 
-    # Вход по QR-коду
+    # Авторизация по QR-коду
     elif data == b"auth_qr":
         proxy_info = worker.get_current_proxy()
         telethon_proxy = get_telethon_proxy(proxy_info)
         
-        await event.edit("⏳ Генерация QR-кода... Подключение к Telegram...")
+        await event.edit("⏳ Подключение к Telegram через прокси...")
 
         auth_client = TelegramClient(USERBOT_SESSION, API_ID, API_HASH, proxy=telethon_proxy)
-        await auth_client.connect()
+        try:
+            await auth_client.connect()
+        except Exception as e:
+            await event.edit(
+                f"❌ **Не удалось подключиться через данный прокси!**\n\nОшибка: `{e}`\n\nПроверьте работоспособность прокси.",
+                buttons=[[Button.inline("⬅️ Прокси меню", b"proxy_menu")]]
+            )
+            return
 
         try:
             qr_login = await auth_client.qr_login()
             
-            # Генерация QR изображения
             img = qrcode.make(qr_login.url)
             bio = io.BytesIO()
             bio.name = 'qr.png'
@@ -353,31 +411,31 @@ async def callback_handler(event):
             await bot.send_file(
                 event.chat_id,
                 bio,
-                caption="🔲 **Сканируйте QR-код в приложении Telegram:**\n\n*Настройки -> Устройства -> Подключить устройство*\n\nОжидаем подтверждения..."
+                caption="🔲 **Сканируйте QR-код в приложении Telegram:**\n\n*Настройки -> Устройства -> Подключить устройство*\n\nОжидание сканирования..."
             )
 
-            # Ожидание сканирования
             try:
                 user = await qr_login.wait(timeout=60)
-                await bot.send_message(event.chat_id, f"✅ **Успешно авторизован пользователь:** {user.first_name} (@{user.username})", buttons=get_main_keyboard())
+                await bot.send_message(event.chat_id, f"✅ **Успешно авторизован:** {user.first_name} (@{user.username})", buttons=get_main_keyboard())
             except SessionPasswordNeededError:
                 auth_context['client'] = auth_client
                 user_states[event.sender_id] = 'awaiting_2fa_qr'
-                await bot.send_message(event.chat_id, "🔐 На аккаунте включен **двухфакторный пароль (2FA)**. Отправьте ваш пароль в чат:")
+                await bot.send_message(event.chat_id, "🔐 Отправьте ваш **2FA пароль** в чат:")
             finally:
-                await auth_client.disconnect()
+                if auth_client.is_connected():
+                    await auth_client.disconnect()
 
         except Exception as e:
-            await bot.send_message(event.chat_id, f"❌ Ошибка генерации QR-кода: {e}", buttons=get_main_keyboard())
+            await bot.send_message(event.chat_id, f"❌ Ошибка QR-авторизации: {e}", buttons=get_main_keyboard())
 
-    # --- СТАНДАРТНЫЕ ДЕЙСТВИЯ ---
+    # --- ВЫПОЛНЕНИЕ ДЕЙСТВИЙ ---
     elif data == b"check_ban":
-        await event.edit("🔄 Проверка статуса аккаунта...")
-        res = await UserbotWorker.check_ban()
+        await event.edit("🔄 Проверка статуса в @SpamBot...")
+        res = await worker.check_ban()
         await event.edit(res, buttons=get_main_keyboard())
 
     elif data == b"warmup":
-        await event.edit("🔥 Запуск прогрева аккаунта...")
+        await event.edit("🔥 Запуск процесса прогрева...")
         async def progress(t):
             try: await event.edit(t)
             except Exception: pass
@@ -390,7 +448,7 @@ async def callback_handler(event):
 
     elif data == b"broadcast":
         user_states[event.sender_id] = 'awaiting_broadcast_text'
-        await event.edit("✉️ Отправьте текст сообщения для рассылки:", buttons=[[Button.inline("❌ Отмена", b"main_menu")]])
+        await event.edit("✉️ Отправьте текст для рассылки:", buttons=[[Button.inline("❌ Отмена", b"main_menu")]])
 
 
 # ==================== ОБРАБОТКА ТЕКСТОВОГО ВВОДА ====================
@@ -402,39 +460,40 @@ async def text_input_handler(event):
 
     state = user_states.get(event.sender_id)
 
-    # 1. Ввод Прокси
+    # 1. Ввод данных Прокси
     if state == 'awaiting_proxy_input':
-        parts = event.text.strip().split(':')
-        if len(parts) in (2, 4):
-            try:
-                new_id = len(proxies_db)
-                p_data = {
-                    'id': new_id,
-                    'host': parts[0],
-                    'port': int(parts[1]),
-                    'user': parts[2] if len(parts) == 4 else None,
-                    'password': parts[3] if len(parts) == 4 else None
-                }
-                proxies_db.append(p_data)
-                
-                global active_proxy_id
-                if active_proxy_id is None:
-                    active_proxy_id = new_id
+        proxy_data = parse_proxy_string(event.text)
+        if proxy_data:
+            new_id = len(proxies_db)
+            proxy_data['id'] = new_id
+            proxies_db.append(proxy_data)
+            
+            global active_proxy_id
+            active_proxy_id = new_id
 
-                user_states.pop(event.sender_id, None)
-                await event.respond("✅ **Прокси успешно добавлен и активирован!**", buttons=get_main_keyboard())
-            except ValueError:
-                await event.respond("❌ Порт должен быть числом.")
+            user_states.pop(event.sender_id, None)
+            proto_str = "HTTP" if proxy_data['type'] == socks.HTTP else ("SOCKS5" if proxy_data['type'] == socks.SOCKS5 else "SOCKS4")
+            await event.respond(
+                f"✅ **Прокси [{proto_str}] успешно добавлен и включен!**\n\n"
+                f"`{proxy_data['host']}:{proxy_data['port']}`", 
+                buttons=get_main_keyboard()
+            )
         else:
-            await event.respond("❌ Неверный формат. Используйте: `ip:port` или `ip:port:login:password`")
+            await event.respond(
+                "❌ **Неверный формат прокси!**\n\n"
+                "Примеры:\n"
+                "• `168.181.53.243:8000`\n"
+                "• `168.181.53.243:8000:user:pass`\n"
+                "• `socks5://1.2.3.4:1080`"
+            )
 
-    # 2. Авторизация по номеру: Ввод номера
+    # 2. Номер телефона
     elif state == 'awaiting_phone':
         phone = event.text.strip()
         proxy_info = worker.get_current_proxy()
         telethon_proxy = get_telethon_proxy(proxy_info)
 
-        msg = await event.respond("⏳ Отправка кода подтверждения...")
+        msg = await event.respond("⏳ Подключение к Telegram и отправка кода...")
 
         try:
             auth_client = TelegramClient(USERBOT_SESSION, API_ID, API_HASH, proxy=telethon_proxy)
@@ -446,12 +505,12 @@ async def text_input_handler(event):
             auth_context['phone_code_hash'] = sent_code.phone_code_hash
 
             user_states[event.sender_id] = 'awaiting_code'
-            await msg.edit("📩 **Код отправлен!** Введите полученный код подтверждения:")
+            await msg.edit("📩 **Код отправлен!** Введите код из Telegram/SMS:")
         except Exception as e:
             user_states.pop(event.sender_id, None)
-            await msg.edit(f"❌ Ошибка отправки кода: {e}", buttons=get_main_keyboard())
+            await msg.edit(f"❌ Не удалось отправить код через прокси: {e}", buttons=get_main_keyboard())
 
-    # 3. Авторизация по номеру: Ввод кода
+    # 3. Код из СМС/Telegram
     elif state == 'awaiting_code':
         code = event.text.strip()
         auth_client = auth_context.get('client')
@@ -464,13 +523,13 @@ async def text_input_handler(event):
 
             user_states.pop(event.sender_id, None)
             auth_context.clear()
-            await event.respond("✅ **Аккаунт успешно авторизован!**", buttons=get_main_keyboard())
+            await event.respond("✅ **Вход выполнен успешно!**", buttons=get_main_keyboard())
 
         except SessionPasswordNeededError:
             user_states[event.sender_id] = 'awaiting_2fa_phone'
-            await event.respond("🔐 Введите ваш **двухфакторный пароль (2FA)**:")
+            await event.respond("🔐 На аккаунте установлен **2FA пароль**. Введите его:")
         except PhoneCodeInvalidError:
-            await event.respond("❌ Неверный код! Попробуйте ввести еще раз:")
+            await event.respond("❌ Неверный код. Попробуйте ещё раз:")
         except Exception as e:
             user_states.pop(event.sender_id, None)
             await event.respond(f"❌ Ошибка входа: {e}", buttons=get_main_keyboard())
@@ -486,14 +545,14 @@ async def text_input_handler(event):
 
             user_states.pop(event.sender_id, None)
             auth_context.clear()
-            await event.respond("✅ **Пароль принят! Вход выполнен успешно.**", buttons=get_main_keyboard())
+            await event.respond("✅ **Пароль принят! Вход успешно завершен.**", buttons=get_main_keyboard())
         except PasswordHashInvalidError:
-            await event.respond("❌ Неверный 2FA пароль. Попробуйте еще раз:")
+            await event.respond("❌ Неверный 2FA пароль. Повторите ввод:")
         except Exception as e:
             user_states.pop(event.sender_id, None)
-            await event.respond(f"❌ Ошибка при вводе 2FA: {e}", buttons=get_main_keyboard())
+            await event.respond(f"❌ Ошибка: {e}", buttons=get_main_keyboard())
 
-    # 5. Ввод источника парсинга
+    # 5. Парсинг
     elif state == 'awaiting_parse_target':
         target = event.text.strip()
         user_states.pop(event.sender_id, None)
@@ -501,11 +560,11 @@ async def text_input_handler(event):
         res = await worker.parse_target(target)
         await msg.edit(res, buttons=get_main_keyboard())
 
-    # 6. Ввод текста для рассылки
+    # 6. Текст для рассылки
     elif state == 'awaiting_broadcast_text':
         text = event.text
         user_states.pop(event.sender_id, None)
-        msg = await event.respond("🚀 Запуск рассылки...")
+        msg = await event.respond("🚀 Запуск рассылки по базе...")
         
         async def progress(s):
             try: await msg.edit(s)
@@ -515,8 +574,8 @@ async def text_input_handler(event):
         await msg.edit(res, buttons=get_main_keyboard())
 
 
-# ==================== ЗАПУСК БОТА ====================
+# ==================== ЗАПУСК ====================
 if __name__ == '__main__':
-    print("[+] Панель управления Telegram запущена...")
+    print("[+] Бот управления запущен в Telegram...")
     bot.start(bot_token=BOT_TOKEN)
     bot.run_until_disconnected()
