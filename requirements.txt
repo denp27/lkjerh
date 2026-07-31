@@ -5,3 +5,4 @@ telethon>=1.30.0
 pysocks
 qrcode
 pillow
+python-socks[asyncio]
