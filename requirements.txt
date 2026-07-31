@@ -2,3 +2,6 @@ aiogram>=3.0.0
 pyTelegramBotAPI
 requests
 telethon>=1.30.0
+pysocks
+qrcode
+pillow
