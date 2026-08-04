@@ -21,10 +21,10 @@ from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.types import ReactionEmoji
 
 # ==================== КОНФИГУРАЦИЯ ====================
-API_ID = 35375652                 # ⚠️ ЗАМЕНИТЕ на ваш api_id (число)
-API_HASH = 'f4143da6a009859e5985eb73759048b7'          # ⚠️ ЗАМЕНИТЕ на ваш api_hash (строка)
-BOT_TOKEN = '8843929400:AAHO0bds4yaxa2DIkk76Q5UH7BuH3amjAuk'        # ⚠️ ЗАМЕНИТЕ на токен управляющего бота
-ADMIN_ID = 8429942952                # ⚠️ ЗАМЕНИТЕ на ваш Telegram ID (число) (доступен только он)
+API_ID =                  # ⚠️ ЗАМЕНИТЕ на ваш api_id (число)
+API_HASH = ''          # ⚠️ ЗАМЕНИТЕ на ваш api_hash (строка)
+BOT_TOKEN = ''        # ⚠️ ЗАМЕНИТЕ на токен управляющего бота
+ADMIN_ID =                 # ⚠️ ЗАМЕНИТЕ на ваш Telegram ID (число) (доступен только он)
 
 BOT_SESSION = 'admin_bot_session'
 PARSED_USERS_FILE = 'parsed_users.txt'
